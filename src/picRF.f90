@@ -1,6 +1,10 @@
 program picRF
 
+use iso_fortran_env
 use netcdf
+use luxury
+use random
+use timer_class
 
 implicit none
 
@@ -13,7 +17,7 @@ type :: particle
 end type
 
 type :: species
-    integer :: nP
+    integer(kind=selected_int_kind(9)) :: nP
     type(particle), dimension(:), pointer :: p
 end type species
 
@@ -32,7 +36,11 @@ end type grid
 type(species) :: H
 type(grid) :: x
 
+logical :: two_electron
+logical :: two_stream
+
 integer :: iStat, i, t
+character(len=5) :: stepChar
 real, allocatable :: rhoNGP(:)
 real, allocatable :: laplaceOp(:,:)
 real, allocatable :: phi(:), Ex(:)
@@ -59,6 +67,24 @@ integer :: x_id, nP_id, vx_id, t_id
 integer :: nc_start(2), nc_count(2), nc_count_grid(2)
 integer :: x_nBins_id, rho_id, phi_id, Ex_id
 integer :: dx_id, scalar_id, weight_id
+integer :: output_freq, outCnt
+
+!   luxury random number generator vars
+
+integer :: values(8)
+character(len=8) :: date
+character(len=10) :: time
+character(len=5) :: zone
+real, allocatable :: randPos(:)
+
+!   random.f90 vars
+
+real, allocatable :: randNormal(:)
+
+!   timing
+
+type(timer) :: clock1
+real(kind=dbl) :: tmpFileTime, tmpFileTime2, fileTime
 
 e   = 1.60217646e-19
 me  = 9.10938188e-31
@@ -74,8 +100,8 @@ t=0
 !   periodic grid
 
 x%mn  = 0.0
-x%mx  = 1.0
-x%nBins   =  128 
+x%mx  = 1.0e-06
+x%nBins   = 128 
 x%rng    = x%mx-x%mn
 x%step  = x%rng/x%nBins
 allocate(x%binCenters(x%nBins),x%binCenters_(x%nBins))
@@ -96,45 +122,94 @@ allocate ( lapack_b(lapack_ldb,lapack_nRhs))
 
 allocate( phi(x%nBins), &
           Ex(x%nBins) )
+
+rhoNGP  = 0.0
 phi = 0.0
 Ex  = 0.0
 
 !   benchmarking scenarios
 !   ----------------------
 
-!   two electron oscillation  
-!   ------------------------
+two_electron = .false.
+two_stream = .true.
 
-H%nP    = 2 
-allocate ( H%p(H%nP), stat = iStat )
-if ( iStat > 0 ) stop
+two_electron_oscillation: &
+if (two_electron) then
 
-H%p%x   = (/ (i * x%rng/4,i=0,H%nP-1) /) + x%mn + 0.22
-H%p%y   = 0.0
-H%p%z   = 0.0
-H%p%vx  = 0.0
-H%p%vy  = 0.0
-H%p%vz  = 0.0
+    H%nP    = 2 
+    allocate ( H%p(H%nP), stat = iStat )
+    if ( iStat > 0 ) stop
+    
+    H%p%x   = (/ (i * x%rng/4,i=0,H%nP-1) /) + x%mn + 0.22
+    H%p%y   = 0.0
+    H%p%z   = 0.0
+    H%p%vx  = 0.0
+    H%p%vy  = 0.0
+    H%p%vz  = 0.0
+    
+    H%p%q    = -1.0 * e
+    
+    ne  = 1e12
+    
+    H%p%w   = ne * x%rng / H%nP 
+    
+    wp  = sqrt ( ne * e**2 / ( me * e0 ) )
 
-H%p%q    = -1.0 * e
+    dt  = 0.15 / wp *1e-4
+    output_freq = 1
+    write(*,*) 'plasma freq: ', wp
+    write(*,*) 'dt: ', dt
+    
+endif two_electron_oscillation
 
-ne  = 1e12
 
-H%p%w   = ne * x%rng / H%nP 
+two_stream_instability: &
+if (two_stream) then
 
-wp  = sqrt ( 4.0 * pi * ne * e**2 / me )
-dt  = 0.15 / wp *1e-4
-write(*,*) 'plasma freq: ', wp
-write(*,*) 'dt: ', dt
+    H%nP    = 2048 
+    output_freq = 1
 
-!!   two stream instability  
-!
-!H%p%x   = (/ (i * x%rng/H%nP,i=0,H%nP-1) /) + x%mn
-!H%p%y   = 0.0
-!H%p%z   = 0.0
-!H%p%vx  = 0.0
-!H%p%vy  = 0.0
-!H%p%vz  = 0.0
+    allocate ( H%p(H%nP), stat = iStat )
+    if ( iStat > 0 ) stop
+
+    allocate ( randPos(H%nP), stat = iStat )
+    allocate ( randNormal(H%nP), stat = iStat )
+    if ( iStat > 0 ) stop
+
+    !   create seed
+    call date_and_time ( date, time, zone, values )
+    !   initialise generator with seed
+    call rLuxGo ( 223, abs ( values(8)*values(7) ) + 1, 0, 0)
+    !   use generator
+    call ranLux ( randPos, H%nP )
+
+    do i=1,H%nP
+        randNormal(i)   = random_normal()
+    enddo
+
+    H%p%x   = randPos * x%rng 
+    H%p%y   = 0.0
+    H%p%z   = 0.0
+    H%p(1:H%nP/2)%vx  = randNormal(1:H%nP/2)*5e2+5e3 
+    H%p(H%nP/2+1:H%nP)%vx = randNormal(H%nP/2+1:H%nP)*5e2-5e3
+    H%p%vy  = 0.0
+    H%p%vz  = 0.0
+    
+    H%p%q    = -1.0 * e
+    
+    ne  = 1e19
+    
+    H%p%w   = ne * x%rng / H%nP 
+    
+    wp  = sqrt ( ne * e**2 / ( me * e0 ) )
+
+    dt  = 1.0 / wp * 0.1
+    
+    write(*,*) 'plasma freq: ', wp
+    write(*,*) 'dt: ', dt
+
+endif two_stream_instability
+
 
 !   setup dimensionless conversions
 !   -----------------------------
@@ -146,8 +221,6 @@ aConv   = dt**2 / x%step
 EConv   = e * dt**2 / ( me * x%step )
 pConv   = e * dt**2 / ( 2.0 * me * x%step**2 )
 rConv   = e * dt**2 / ( 2.0 * me * e0 )
-
-write(*,*) 'H%p%x: ', H%p%x
 
 !   setup laplace operator
 !   ----------------------
@@ -204,10 +277,15 @@ nc_count   = (/ H%nP, 1 /)
 nc_count_grid   = (/ x%nBins, 1 /)
 ncStat  = nf90_put_var ( ncid, dx_id, x%step )
 
-time_loop: &
-do t=1,100
-   
+outCnt = 0
 
+call clock1%start_timer()
+
+time_loop: &
+do t=1,1000
+    !write(*,'(i4)', advance = 'no') t 
+    !flush ( output_unit )
+ 
     !   calculate charge density
     !   ------------------------
    
@@ -216,21 +294,27 @@ do t=1,100
     rhoNGP  = 0.0
     do i=1,H%nP 
     
+        !H%p(i)%ii   = & 
+        !    mod ( &
+        !        nInt ( &
+        !            (H%p(i)%x-x%binCenters(1)) / x%rng * x%nBins &
+        !             ), x%nBins &
+        !        ) + 1
         H%p(i)%ii   = & 
-            mod ( &
                 nInt ( &
                     (H%p(i)%x-x%binCenters(1)) / x%rng * x%nBins &
-                     ), x%nBins &
-                ) + 1
+                     +1) 
+        if (H%p(i)%ii .eq. x%nBins+1) H%p(i)%ii = 1
 
         !if (H%p(i)%ii < 1 .or. H%p(i)%ii > x%nBins ) then
         !    write(*,*) 'picRF.f90[209]: ', H%p(i)%ii, H%p(i)%x
+        !    stop
         !endif
 
         rhoNGP(H%p(i)%ii) = rhoNGP(H%p(i)%ii) + H%p(i)%q * H%p(i)%w / x%step
     
     enddo
-   
+ 
 
     !   enforce charge neutrality
     !   -------------------------
@@ -273,6 +357,7 @@ do t=1,100
     do i=2,x%nBins-1
         Ex(i)   = ( phi(i-1) - phi(i+1) ) / ( 2.0 * x%step )
     enddo calculate_Ex
+    !Ex = 0
 
 
 !    !   print debug info
@@ -296,9 +381,9 @@ do t=1,100
         !   periodic particle boundaries
         if ( H%p(i)%x < x%mn ) H%p(i)%x = H%p(i)%x + x%rng
         if ( H%p(i)%x .ge. x%mx ) H%p(i)%x = H%p(i)%x - x%rng
- 
+
         dx_too_large: & 
-        if ( H%p(i)%x < x%mn .or. H%p(i)%x .ge. x%mx ) then
+        if ( H%p(i)%x < x%mn .or. H%p(i)%x .gt. x%mx ) then
               write(*,*) 'picRF.f90 [275]:' 
               write(*,*) 'ERROR: reduce dt', &
                 (H%p(i)%x-x%mn)/x%rng, &
@@ -308,30 +393,42 @@ do t=1,100
 
     enddo move_particles
     
-    write(*,*) H%p%x, H%p%vx
-
-
     !stop
-    
-    nc_start(2) = t
-    ncStat  = nf90_put_var ( ncid, x_id, H%p%x, &
-        start = nc_start, count = nc_count )
-    ncStat  = nf90_put_var ( ncid, vx_id, H%p%vx, &
-        start = nc_start, count = nc_count )
-    ncStat  = nf90_put_var ( ncid, weight_id, H%p%w, &
-        start = nc_start, count = nc_count )
+     !   write data
+    !   ----------
 
+    !write(*,*) H%p%vx
 
-    ncStat  = nf90_put_var ( ncid, rho_id, rhoNGP, &
-        start = nc_start, count = nc_count_grid )
-    ncStat  = nf90_put_var ( ncid, phi_id, phi, &
-        start = nc_start, count = nc_count_grid )
-    ncStat  = nf90_put_var ( ncid, Ex_id, Ex, &
-        start = nc_start, count = nc_count_grid )
+    if (mod(t,output_freq) .eq. 0) then
 
+        write(*,*) t
+        tmpFileTime = clock1%elapsed_time()
+
+        outCnt  = outCnt + 1
+        nc_start(2) = outCnt 
+        ncStat  = nf90_put_var ( ncid, x_id, H%p%x, &
+            start = nc_start, count = nc_count )
+        ncStat  = nf90_put_var ( ncid, vx_id, H%p%vx, &
+            start = nc_start, count = nc_count )
+        ncStat  = nf90_put_var ( ncid, weight_id, H%p%w, &
+            start = nc_start, count = nc_count )
+
+        ncStat  = nf90_put_var ( ncid, rho_id, rhoNGP, &
+            start = nc_start, count = nc_count_grid )
+        ncStat  = nf90_put_var ( ncid, phi_id, phi, &
+            start = nc_start, count = nc_count_grid )
+        ncStat  = nf90_put_var ( ncid, Ex_id, Ex, &
+            start = nc_start, count = nc_count_grid )
+
+        tmpFileTime2 = clock1%elapsed_time()
+        fileTime = fileTime + (tmpFileTime2 - tmpFileTime)
+    endif
 
 enddo time_loop
 
 ncStat  = nf90_close ( ncid )
+
+write(*,'(a30,2x,f5.1)') 'Elapsed time: ', clock1%elapsed_time()
+write(*,'(a30,2x,f5.1)') 'netCDF time: ',fileTime 
 
 end program picRF
