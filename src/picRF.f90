@@ -41,7 +41,8 @@ logical :: two_stream
 
 integer :: iStat, i, t
 character(len=5) :: stepChar
-real, allocatable :: rhoNGP(:)
+real, allocatable :: rhoNGP(:) 
+integer, allocatable :: rhoNGP_cuda(:)
 real, allocatable :: laplaceOp(:,:)
 real, allocatable :: phi(:), Ex(:)
 
@@ -83,7 +84,7 @@ real, allocatable :: randNormal(:)
 
 !   timing
 
-type(timer) :: clock1
+type(timer) :: clock1, clockHist, clockHistCuda
 real(kind=dbl) :: tmpFileTime, tmpFileTime2, fileTime
 
 e   = 1.60217646e-19
@@ -101,13 +102,14 @@ t=0
 
 x%mn  = 0.0
 x%mx  = 1.0e-06
-x%nBins   = 128 
+x%nBins   = 256 
 x%rng    = x%mx-x%mn
 x%step  = x%rng/x%nBins
 allocate(x%binCenters(x%nBins),x%binCenters_(x%nBins))
 x%binCenters  = (/ (i*x%step,i=0,x%nBins) /) 
 
 allocate(rhoNGP(x%nBins), stat = iStat)
+allocate(rhoNGP_cuda(x%nBins), stat = iStat)
 
 lapack_n    = x%nBins
 lapack_nRhs = 1
@@ -124,6 +126,7 @@ allocate( phi(x%nBins), &
           Ex(x%nBins) )
 
 rhoNGP  = 0.0
+rhoNGP_cuda = 0
 phi = 0.0
 Ex  = 0.0
 
@@ -166,7 +169,7 @@ endif two_electron_oscillation
 two_stream_instability: &
 if (two_stream) then
 
-    H%nP    = 2048 
+    H%nP    = 2560000
     output_freq = 1
 
     allocate ( H%p(H%nP), stat = iStat )
@@ -282,7 +285,7 @@ outCnt = 0
 call clock1%start_timer()
 
 time_loop: &
-do t=1,1000
+do t=1,1
     !write(*,'(i4)', advance = 'no') t 
     !flush ( output_unit )
  
@@ -290,6 +293,8 @@ do t=1,1000
     !   ------------------------
    
     !   background ion charge density
+
+    call clockHist%start_timer()
 
     rhoNGP  = 0.0
     do i=1,H%nP 
@@ -311,10 +316,23 @@ do t=1,1000
         !    stop
         !endif
 
-        rhoNGP(H%p(i)%ii) = rhoNGP(H%p(i)%ii) + H%p(i)%q * H%p(i)%w / x%step
+        rhoNGP(H%p(i)%ii) = rhoNGP(H%p(i)%ii) + 1!H%p(i)%q * H%p(i)%w / x%step
     
     enddo
- 
+    write(*,'(a30,2x,f5.1)') 'hist time: ', clockHist%elapsed_time()
+
+    ! try cuda histogram ;-)
+    call clockHistCuda%start_timer()
+    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng)
+    write(*,'(a30,2x,f5.1)') 'hist cuda time: ', clockHistCuda%elapsed_time()
+
+    ! compare the GPU and CPU versions
+
+    !do i=1,x%nBins
+    !    write(*,*) rhoNGP(i), rhoNGP_cuda(i)
+    !enddo
+    write(*,*) '----------------------------' 
+    write(*,*) sum(rhoNGP), sum(rhoNGP_cuda)
 
     !   enforce charge neutrality
     !   -------------------------
