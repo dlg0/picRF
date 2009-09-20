@@ -3,7 +3,7 @@ F90FLAGS = -Jmod/ -g -fbacktrace
 
 CUDA = nvcc
 CUDA_LIB = -L/home/dg6/code/cuda/lib/ -lcudart
-CUDA_FLAGS = --compiler-bindir /home/dg6/code/gcc43/usr/bin -I /usr/include/c++/4.4.0/x86_64-redhat-linux/ -I /usr/include/c++/4.4.0/ -g -arch sm_13 #-deviceemu 
+CUDA_FLAGS = --compiler-bindir /home/dg6/code/gcc43/usr/bin -I /usr/include/c++/4.4.1/x86_64-redhat-linux/ -I /usr/include/c++/4.4.1/ -g -arch sm_13 #-deviceemu 
 
 EXEC = xpicRF
 

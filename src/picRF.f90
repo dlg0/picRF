@@ -169,7 +169,7 @@ endif two_electron_oscillation
 two_stream_instability: &
 if (two_stream) then
 
-    H%nP    = 2560000
+    H%nP    = 25600
     output_freq = 1
 
     allocate ( H%p(H%nP), stat = iStat )
@@ -299,12 +299,6 @@ do t=1,1
     rhoNGP  = 0.0
     do i=1,H%nP 
     
-        !H%p(i)%ii   = & 
-        !    mod ( &
-        !        nInt ( &
-        !            (H%p(i)%x-x%binCenters(1)) / x%rng * x%nBins &
-        !             ), x%nBins &
-        !        ) + 1
         H%p(i)%ii   = & 
                 nInt ( &
                     (H%p(i)%x-x%binCenters(1)) / x%rng * x%nBins &
@@ -328,9 +322,9 @@ do t=1,1
 
     ! compare the GPU and CPU versions
 
-    !do i=1,x%nBins
-    !    write(*,*) rhoNGP(i), rhoNGP_cuda(i)
-    !enddo
+    do i=1,x%nBins
+        write(*,*) rhoNGP(i), rhoNGP_cuda(i)
+    enddo
     write(*,*) '----------------------------' 
     write(*,*) sum(rhoNGP), sum(rhoNGP_cuda)
 

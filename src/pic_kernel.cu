@@ -88,10 +88,11 @@ static __global__ void hist_kernel ( float *xIn, int nx, unsigned int *histOutBl
 	{
 		
 		// calculate histogram index for this data
-		ii = lrintf((xIn[i]-xMin) * inv_xRng * (NHIST-1));
+		ii = rint((xIn[i]-xMin) * inv_xRng * NHIST);
 
-		// increment my warp histogram, remember there are 6 per block
-		warp_hist_kernel ( s_warp_hist+warpOffset, ii, threadTag );
+		// mod (%) operation here is for periodic boundary conditions, 
+		// i.e., 257 -> 1 
+		warp_hist_kernel ( s_warp_hist+warpOffset, ii%256, threadTag );
 
 	}
 
