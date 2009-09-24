@@ -5,6 +5,7 @@ use netcdf
 use luxury
 use random
 use timer_class
+use possion_solvers
 
 implicit none
 
@@ -42,16 +43,16 @@ logical :: two_stream
 integer :: iStat, i, t
 character(len=5) :: stepChar
 real, allocatable :: rhoNGP(:) 
-integer, allocatable :: rhoNGP_cuda(:)
+real, allocatable :: rhoNGP_cuda(:)
 real, allocatable :: laplaceOp(:,:)
-real, allocatable :: phi(:), Ex(:)
+real, allocatable :: phi(:), Ex(:), phi_jacobi(:)
 
 !   physical constants
 
 real :: e, me, mi, e0, pi
 real :: dt, wp, total_charge
 real :: xConv, tConv, vConv, aConv, EConv, pConv, rConv
-real :: ne
+real :: ne, weight
 
 !   lapack variables
 
@@ -59,6 +60,7 @@ integer :: lapack_info, lapack_lda, lapack_ldb, &
     lapack_n, lapack_nrhs
 integer, allocatable :: lapack_ipiv(:)
 real, allocatable :: lapack_a(:,:), lapack_b(:,:)
+integer :: jStat
 
 !   netcdf variables
 
@@ -87,7 +89,7 @@ real, allocatable :: randNormal(:)
 type(timer) :: clock1, clockHist, clockHistCuda
 real(kind=dbl) :: tmpFileTime, tmpFileTime2, fileTime
 
-e   = 1.60217646e-19
+e   = 1.602e-19
 me  = 9.10938188e-31
 mi  = 1.67262158e-27
 e0  = 8.85418782e-12
@@ -123,11 +125,13 @@ allocate ( lapack_b(lapack_ldb,lapack_nRhs))
 
 
 allocate( phi(x%nBins), &
-          Ex(x%nBins) )
+          Ex(x%nBins), &
+          phi_jacobi(x%nBins) )
 
 rhoNGP  = 0.0
 rhoNGP_cuda = 0
 phi = 0.0
+phi_jacobi  = 0.0
 Ex  = 0.0
 
 !   benchmarking scenarios
@@ -154,7 +158,9 @@ if (two_electron) then
     
     ne  = 1e12
     
-    H%p%w   = ne * x%rng / H%nP 
+    !H%p%w   = ne * x%rng / H%nP 
+    weight   = ne * x%rng / H%nP 
+
     
     wp  = sqrt ( ne * e**2 / ( me * e0 ) )
 
@@ -202,7 +208,8 @@ if (two_stream) then
     
     ne  = 1e19
     
-    H%p%w   = ne * x%rng / H%nP 
+    !H%p%w   = ne * x%rng / H%nP 
+    weight   = ne * x%rng / H%nP 
     
     wp  = sqrt ( ne * e**2 / ( me * e0 ) )
 
@@ -292,8 +299,6 @@ do t=1,1
     !   calculate charge density
     !   ------------------------
    
-    !   background ion charge density
-
     call clockHist%start_timer()
 
     rhoNGP  = 0.0
@@ -305,35 +310,36 @@ do t=1,1
                      +1) 
         if (H%p(i)%ii .eq. x%nBins+1) H%p(i)%ii = 1
 
-        !if (H%p(i)%ii < 1 .or. H%p(i)%ii > x%nBins ) then
-        !    write(*,*) 'picRF.f90[209]: ', H%p(i)%ii, H%p(i)%x
-        !    stop
-        !endif
-
-        rhoNGP(H%p(i)%ii) = rhoNGP(H%p(i)%ii) + 1!H%p(i)%q * H%p(i)%w / x%step
+        rhoNGP(H%p(i)%ii) = rhoNGP(H%p(i)%ii) + 1
     
     enddo
+
+    rhoNGP = (-1.0) * e * weight / x%step * rhoNGP 
+
+    
     write(*,'(a30,2x,f5.1)') 'hist time: ', clockHist%elapsed_time()
 
     ! try cuda histogram ;-)
     call clockHistCuda%start_timer()
-    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng)
+    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng,weight,x%step)
     write(*,'(a30,2x,f5.1)') 'hist cuda time: ', clockHistCuda%elapsed_time()
-
-    ! compare the GPU and CPU versions
-
-    do i=1,x%nBins
-        write(*,*) rhoNGP(i), rhoNGP_cuda(i)
-    enddo
-    write(*,*) '----------------------------' 
-    write(*,*) sum(rhoNGP), sum(rhoNGP_cuda)
 
     !   enforce charge neutrality
     !   -------------------------
 
     total_charge    = sum ( rhoNGP )
     rhoNGP  = rhoNGP - total_charge / x%nBins 
-    
+    !write(*,*) 'CPU total:'
+    !write(*,'(f15.7)') total_charge 
+    !! compare the GPU and CPU versions
+
+    !do i=1,x%nBins
+    !    write(*,*) rhoNGP(i), rhoNGP_cuda(i)
+    !enddo
+    !write(*,*) '----------------------------' 
+    !write(*,*) sum(rhoNGP), sum(rhoNGP_cuda)
+
+   
     
     !   sovle laplace eqn
     !   -----------------
@@ -357,7 +363,21 @@ do t=1,1
     endif check_lapack_result
     
     phi = lapack_b(:,1)
-   
+  
+    
+    !!   try jacobi iterative method
+    !!   ---------------------------
+
+    !phi_jacobi  = 0
+    !jStat = jacobi_iter ( laplaceOp, -rhoNGP(1:x%nBins) / e0 * x%step**2, x = phi_jacobi ) 
+
+    !phi = phi_jacobi
+    do i=1,x%nBins
+        write(*,*) phi(i), rhoNGP_cuda(i), lapack_b(i,1)
+    enddo
+    write(*,*) '----------------------------' 
+    write(*,*) sum ( phi ), sum ( phi_jacobi )
+
 
     !   calculate Ex
     !   ------------
