@@ -268,28 +268,20 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 	printf ("Creating possion eqn matrix ...\n");
 	float *a, *a_d;
 	int *ipiv_d;
+
 	a	= (float *)malloc(NHIST*NHIST*sizeof(float));
-	//a[0]	= -2;
-	//a[1]	=  1;
-	//a[NHIST*(NHIST-1)]	=  1;
-	//a[NHIST*NHIST-1]	= -2;
-	//a[NHIST*NHIST-2]	=  1;
-	//for (int i=1;i<NHIST-1;i++){
-	//	a[i*NHIST+i-1]	=  1;
-	//	a[i*NHIST+1]	= -2;
-	//	a[i*NHIST+i+1]	=  1;
-	//}
-	a[0]	= -2.0;
-	a[NHIST]	=  1.0;
-	a[NHIST-1]	=  1.0;
-	a[NHIST*NHIST-1]	= -2.0;
-	a[NHIST*(NHIST-1)-1]	=  1.0;
+
+	a[0]	= -2;
+	a[1]	=  1;
+	a[NHIST*NHIST-1-(NHIST-1)]	=  1;
+	a[NHIST*NHIST-1]	= -2;
+	a[NHIST*NHIST-2]	=  1;
 	for (int i=1;i<NHIST-1;i++){
-		a[(i-1)*NHIST+i]	=  1.0;
-		a[i*NHIST+i]	= -2.0;
-		a[(i+1)*NHIST+i]	=  1.0;
+		a[i*NHIST+i-1]	=  1;
+		a[i*NHIST+i]	= -2;
+		a[i*NHIST+i+1]	=  1;
 	}
-	
+
 	printf ("DONE\n");
 	CUERR
 	printf ("Allocating a_d on device ...\n");
@@ -357,7 +349,7 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 	checkStatus(status);
 	printf ("DONE\n");
 
-	//status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
+	status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
 	printf ("cula solve status: %i\n", status);
 	checkStatus(status);
 
