@@ -45,7 +45,7 @@ character(len=5) :: stepChar
 real, allocatable :: rhoNGP(:) 
 real, allocatable :: rhoNGP_cuda(:)
 real, allocatable :: laplaceOp(:,:)
-real, allocatable :: phi(:), Ex(:), phi_jacobi(:)
+real, allocatable :: phi(:), Ex(:), Ex_cuda(:), phi_jacobi(:)
 
 !   physical constants
 
@@ -126,6 +126,7 @@ allocate ( lapack_b(lapack_ldb,lapack_nRhs))
 
 allocate( phi(x%nBins), &
           Ex(x%nBins), &
+          Ex_cuda(x%nBins), &
           phi_jacobi(x%nBins) )
 
 rhoNGP  = 0.0
@@ -133,6 +134,7 @@ rhoNGP_cuda = 0
 phi = 0.0
 phi_jacobi  = 0.0
 Ex  = 0.0
+Ex_cuda = 0.0
 
 !   benchmarking scenarios
 !   ----------------------
@@ -321,7 +323,7 @@ do t=1,1
 
     ! try cuda histogram ;-)
     call clockHistCuda%start_timer()
-    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng,weight,x%step)
+    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng,weight,x%step,Ex_cuda)
     write(*,'(a30,2x,f5.1)') 'hist cuda time: ', clockHistCuda%elapsed_time()
 
     !   enforce charge neutrality
@@ -371,9 +373,8 @@ do t=1,1
     !phi_jacobi  = 0
     !jStat = jacobi_iter ( laplaceOp, -rhoNGP(1:x%nBins) / e0 * x%step**2, x = phi_jacobi ) 
 
-    !phi = phi_jacobi
     do i=1,x%nBins
-        write(*,*) phi(i), rhoNGP_cuda(i), lapack_b(i,1)
+        write(*,*) phi(i), rhoNGP_cuda(i), -rhoNGP(i) / e0 * x%step**2
     enddo
     write(*,*) '----------------------------' 
     write(*,*) sum ( phi ), sum ( phi_jacobi )
@@ -389,7 +390,12 @@ do t=1,1
     do i=2,x%nBins-1
         Ex(i)   = ( phi(i-1) - phi(i+1) ) / ( 2.0 * x%step )
     enddo calculate_Ex
-    !Ex = 0
+
+    do i=1,x%nBins
+        write(*,*) Ex(i), Ex_cuda(i)
+    enddo
+    write(*,*) '----------------------------' 
+    write(*,*) sum ( Ex ), sum ( Ex_cuda )
 
 
 !    !   print debug info

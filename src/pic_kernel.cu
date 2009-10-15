@@ -75,6 +75,19 @@ __global__ void remove_average ( float *data, float dx ){
 
 }
 
+__global__ void compute_eField ( float *phi, float *E, float dx ){
+
+	E[0]	= ( phi[NHIST-1] - phi[1] ) / ( 2 * dx );
+	E[NHIST-1]	= ( phi[NHIST-2] - phi[0] ) / ( 2 * dx ); 
+
+	for ( int i=1;i<NHIST-2;i++ ){
+
+		E[i]	= ( phi[i-1] - phi[i+1] ) / ( 2 * dx );
+
+	}
+
+}
+
 #ifdef SMEM_ATOMICS
 	
 	__device__ inline void warp_hist_kernel ( unsigned int *s_warp_hist, unsigned int dataIdx, unsigned int threadTag )
@@ -220,25 +233,28 @@ void checkStatus(culaStatus status)
 	arguments passed by reference
 */
 
-extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float *xMin, float *xRng, float *weight, float *dx )
+extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, float *xMin, float *xRng, float *weight, float *dx, float *EField )
 {
 	int nx = *nP;
-	float *x_h, *x_d, *rho_h, *rho_d;
+	float *x_d, *rho_h, *rho_d, *E_h, *E_d;
 	unsigned int *hist_h, *hist_d;
 
 	//	check and set device
 
-	int GPU_N;
-	cudaGetDeviceCount (&GPU_N);
-	printf("CUDA-capable device count: %i\n", GPU_N);	
-	for (int i=0;i<GPU_N;i++)
-	{
-		cudaDeviceProp deviceProp;
-		cudaGetDeviceProperties (&deviceProp,i);
-		printf("\nDevice %d: \"%s\"\n", i, deviceProp.name);
-	}
+	#ifndef __DEVICE_EMULATION__
+		int GPU_N;
+		cudaGetDeviceCount (&GPU_N);
+		printf("CUDA-capable device count: %i\n", GPU_N);	
+		for (int i=0;i<GPU_N;i++)
+		{
+			cudaDeviceProp deviceProp;
+			cudaGetDeviceProperties (&deviceProp,i);
+			printf("\nDevice %d: \"%s\"\n", i, deviceProp.name);
+		}
 
-	cudaSetDevice ( 0 );
+		cudaSetDevice ( 0 );
+		CUERR
+	#endif
 
 	#ifdef SMEM_ATOMICS
 		printf("Using shared memory atomics\n");
@@ -253,18 +269,29 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	float *a, *a_d;
 	int *ipiv_d;
 	a	= (float *)malloc(NHIST*NHIST*sizeof(float));
-	a[0]	= -2;
-	a[1]	=  1;
-	a[NHIST*(NHIST-1)]	=  1;
-	a[NHIST*NHIST-1]	= -2;
-	a[NHIST*NHIST-2]	=  1;
+	//a[0]	= -2;
+	//a[1]	=  1;
+	//a[NHIST*(NHIST-1)]	=  1;
+	//a[NHIST*NHIST-1]	= -2;
+	//a[NHIST*NHIST-2]	=  1;
+	//for (int i=1;i<NHIST-1;i++){
+	//	a[i*NHIST+i-1]	=  1;
+	//	a[i*NHIST+1]	= -2;
+	//	a[i*NHIST+i+1]	=  1;
+	//}
+	a[0]	= -2.0;
+	a[NHIST]	=  1.0;
+	a[NHIST-1]	=  1.0;
+	a[NHIST*NHIST-1]	= -2.0;
+	a[NHIST*(NHIST-1)-1]	=  1.0;
 	for (int i=1;i<NHIST-1;i++){
-		a[i*NHIST+i-1]	=  1;
-		a[i*NHIST+1]	= -2;
-		a[i*NHIST+i+1]	=  1;
+		a[(i-1)*NHIST+i]	=  1.0;
+		a[i*NHIST+i]	= -2.0;
+		a[(i+1)*NHIST+i]	=  1.0;
 	}
+	
 	printf ("DONE\n");
-
+	CUERR
 	printf ("Allocating a_d on device ...\n");
 	cudaMalloc ((void **) &a_d, sizeof(float) * NHIST*NHIST );
 	cudaMalloc ((void **) &ipiv_d, sizeof(int) * NHIST );
@@ -274,13 +301,11 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	cudaMemcpy ( a_d, a, NHIST*NHIST*sizeof(float), cudaMemcpyHostToDevice );
 	CUERR
 
-	x_h = (float *)malloc(sizeof(float)*nx);
-	for (int i=0;i<nx;i++) x_h[i] = x[i];
-
 	printf(" nx: %i\n nhist: %i\n xMin: %e\n xRng: %e\n", nx, NHIST, *xMin, *xRng);
 
 	hist_h = (unsigned int *)malloc(sizeof(unsigned int)*NHIST);
 	for (int i=0;i<NHIST;i++) hist_h[i] = 0;
+
 
 	// allocate memory on device
 
@@ -294,11 +319,12 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	CUERR
 	cudaMalloc ((void **) &rho_d, sizeof(float)*NHIST);
 	CUERR
-
+	cudaMalloc ((void **) &E_d, sizeof(float)*NHIST);
+	CUERR
 
 	// copy from host to device
 
-	cudaMemcpy ( x_d, x, sizeof(float)*nx, cudaMemcpyHostToDevice);
+	cudaMemcpy ( x_d, x_h, sizeof(float)*nx, cudaMemcpyHostToDevice);
 	CUERR
 
 	// execute kernel
@@ -323,7 +349,6 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	}
 
 
-
 	//	initialise cula
 
 	printf ("Initializing cula ...\n");
@@ -332,13 +357,11 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	checkStatus(status);
 	printf ("DONE\n");
 
-	status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
+	//status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
 	printf ("cula solve status: %i\n", status);
 	checkStatus(status);
 
-	printf ("Shutting down cula ...\n");
-	culaShutdown();	
-	printf ("DONE\n");
+	//compute_eField<<<1,1>>>(rho_d,E_d,*dx);
 
 	// copy result back to host
 
@@ -349,20 +372,28 @@ extern "C" void cudahist_ ( float *x, int *nP, float *hist, int *nhistIn, float 
 	cudaMemcpy ( rho_h, rho_d, sizeof(float)*NHIST, cudaMemcpyDeviceToHost);
 	CUERR
 
-	cudaFree ( hist_d );
-	cudaFree ( x_d );
-	cudaFree ( a_d );
+	E_h = (float *)malloc(sizeof(float)*NHIST);
+	cudaMemcpy ( E_h, E_d, sizeof(float)*NHIST, cudaMemcpyDeviceToHost);
 	CUERR
 
 	for (int i=0;i<NHIST;i++){
-		 hist[i] = rho_h[i];
- 		 printf ("%i: %f, %f\n",i, rho_h[i] );
+		hist[i] = rho_h[i];
+		EField[i]	= E_h[i];	
+ 		printf ("%i: %f, %f\n",i, rho_h[i], EField[i] );
 	}
 
-	//initialize<<<1,1>>>(
+	printf ("Shutting down cula ...\n");
+	culaShutdown();	
+	printf ("DONE\n");
 
+	cudaFree ( hist_d );
+	cudaFree ( x_d );
+	cudaFree ( a_d );
+	cudaFree ( E_d );
+	CUERR
 
-	free ( hist_h );
+	//free ( hist_h );
+	//free ( E_h );
 
 	return;	
 }
