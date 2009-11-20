@@ -89,6 +89,10 @@ real, allocatable :: randNormal(:)
 type(timer) :: clock1, clockHist, clockHistCuda
 real(kind=dbl) :: tmpFileTime, tmpFileTime2, fileTime
 
+!   cuda copies
+
+real, allocatable :: cuda_x(:), cuda_vx(:)
+
 e   = 1.602e-19
 me  = 9.10938188e-31
 mi  = 1.67262158e-27
@@ -222,6 +226,11 @@ if (two_stream) then
 
 endif two_stream_instability
 
+!   allocate cuda copies
+
+    allocate ( cuda_x ( H%nP ), cuda_vx ( H%nP ) )
+    cuda_x  = H%p%x
+    cuda_vx = H%p%vx
 
 !   setup dimensionless conversions
 !   -----------------------------
@@ -321,11 +330,6 @@ do t=1,1
     
     write(*,'(a30,2x,f5.1)') 'hist time: ', clockHist%elapsed_time()
 
-    ! try cuda histogram ;-)
-    call clockHistCuda%start_timer()
-    call cudahist(H%p%x,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),x%rng,weight,x%step,Ex_cuda)
-    write(*,'(a30,2x,f5.1)') 'hist cuda time: ', clockHistCuda%elapsed_time()
-
     !   enforce charge neutrality
     !   -------------------------
 
@@ -373,12 +377,6 @@ do t=1,1
     !phi_jacobi  = 0
     !jStat = jacobi_iter ( laplaceOp, -rhoNGP(1:x%nBins) / e0 * x%step**2, x = phi_jacobi ) 
 
-    do i=1,x%nBins
-        write(*,*) phi(i), rhoNGP_cuda(i), -rhoNGP(i) / e0 * x%step**2
-    enddo
-    write(*,*) '----------------------------' 
-    write(*,*) sum ( phi ), sum ( phi_jacobi )
-
 
     !   calculate Ex
     !   ------------
@@ -390,12 +388,6 @@ do t=1,1
     do i=2,x%nBins-1
         Ex(i)   = ( phi(i-1) - phi(i+1) ) / ( 2.0 * x%step )
     enddo calculate_Ex
-
-    do i=1,x%nBins
-        write(*,*) Ex(i), Ex_cuda(i)
-    enddo
-    write(*,*) '----------------------------' 
-    write(*,*) sum ( Ex ), sum ( Ex_cuda )
 
 
 !    !   print debug info
@@ -463,6 +455,27 @@ do t=1,1
     endif
 
 enddo time_loop
+
+! call cuda version
+
+call clockHistCuda%start_timer()
+call cudahist(cuda_x,cuda_vx,H%nP,rhoNGP_cuda,x%nBins,x%binCenters(1),&
+    x%mx,x%rng,weight,x%step,Ex_cuda,dt)
+write(*,'(a30,2x,f5.1)') 'hist cuda time: ', clockHistCuda%elapsed_time()
+
+
+do i=1,x%nBins
+    write(*,*) phi(i), rhoNGP_cuda(i), -rhoNGP(i) / e0 * x%step**2
+enddo
+write(*,*) '----------------------------' 
+write(*,*) sum ( phi ), sum ( phi_jacobi )
+
+do i=1,x%nBins
+    write(*,*) Ex(i), Ex_cuda(i)
+enddo
+write(*,*) '----------------------------' 
+write(*,*) sum ( Ex ), sum ( Ex_cuda )
+
 
 ncStat  = nf90_close ( ncid )
 

@@ -80,7 +80,7 @@ __global__ void compute_eField ( float *phi, float *E, float dx ){
 	E[0]	= ( phi[NHIST-1] - phi[1] ) / ( 2 * dx );
 	E[NHIST-1]	= ( phi[NHIST-2] - phi[0] ) / ( 2 * dx ); 
 
-	for ( int i=1;i<NHIST-2;i++ ){
+	for ( int i=1;i<NHIST-1;i++ ){
 
 		E[i]	= ( phi[i-1] - phi[i+1] ) / ( 2 * dx );
 
@@ -110,6 +110,31 @@ __global__ void compute_eField ( float *phi, float *E, float dx ){
 	}
 
 #endif
+
+__global__ void move_particles ( float *x, float *vx, int nP, float *Ex, float dt, float xMin, float xMax, float xRng ) {
+
+	const int myThrdId = blockIdx.x * blockDim.x + threadIdx.x;
+	const int nThreads = blockDim.x * gridDim.x;
+	const float me = 9.10938188e-31; 
+	const float inv_me	= 1.0 / me;
+	const float inv_xRng = 1.0 / xRng;
+	const float q = -1.602e-19;
+	int xIndex;
+
+	for ( int i=myThrdId; i<nP; i+=nThreads ) {
+
+		xIndex = rint( ( x[i]-xMin ) * inv_xRng * NHIST);
+
+    	vx[i]   = vx[i] + dt * inv_me * q * Ex[xIndex];
+        x[i]    = x[i] + vx[i] * dt;
+
+        //   periodic particle boundaries
+
+        if ( x[i] < xMin ) x[i] = x[i] + xRng;
+        if ( x[i] >= xMax ) x[i] = x[i] - xRng;
+	}
+
+}
 
 static __global__ void hist_kernel ( float *xIn, int nx, unsigned int *histOutBlock, float xMin, float xRng, float *rho, float weight, float dx)
 {
@@ -233,10 +258,12 @@ void checkStatus(culaStatus status)
 	arguments passed by reference
 */
 
-extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, float *xMin, float *xRng, float *weight, float *dx, float *EField )
+extern "C" void cudahist_ ( float *x_h, float *vx_h, int *nP, float *hist, 
+	int *nhistIn, float *xMin, float *xMax, float *xRng, 
+	float *weight, float *dx, float *EField, float *dt )
 {
 	int nx = *nP;
-	float *x_d, *rho_h, *rho_d, *E_h, *E_d;
+	float *x_d, *rho_h, *rho_d, *E_h, *E_d, *vx_d;
 	unsigned int *hist_h, *hist_d;
 
 	//	check and set device
@@ -303,6 +330,9 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 
 	cudaMalloc ((void **) &x_d, sizeof(float)*nx);
 	CUERR
+	cudaMalloc ((void **) &vx_d, sizeof(float)*nx);
+	CUERR
+	
 	#ifdef GMEM_ATOMICS
 		cudaMalloc ((void **) &hist_d, sizeof(unsigned int)*NHIST);
 	#else
@@ -318,28 +348,8 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 
 	cudaMemcpy ( x_d, x_h, sizeof(float)*nx, cudaMemcpyHostToDevice);
 	CUERR
-
-	// execute kernel
-
-	printf ("Executing kernels ...\n");
-	#ifdef GMEM_ATOMICS
-		cudaMemset ( hist_d, 0, sizeof(unsigned int)*NHIST ); // sets all bytes to 0
-		hist_kernel<<<NBLOCK,NTHREAD_PB>>>(x_d,nx,hist_d,*xMin,*xRng,rho_d,*weight,*dx);
-		remove_average<<<1,1>>>(rho_d,*dx);
-	#else
-		hist_kernel<<<NBLOCK,NTHREAD_PB>>>(x_d,nx,hist_d,*xMin,*xRng,rho_d,*weight,*dx);
-		mergePerBlockHistograms_kernel<<<NHIST,NBLOCK>>>(hist_d,*dx);
-		remove_average<<<1,1>>>(rho_d);
-	#endif
-	printf ("DONE\n");
-
-	rho_h = (float *)malloc(sizeof(float)*NHIST);
-	cudaMemcpy ( rho_h, rho_d, sizeof(float)*NHIST, cudaMemcpyDeviceToHost);
+	cudaMemcpy ( vx_d, x_h, sizeof(float)*nx, cudaMemcpyHostToDevice);
 	CUERR
-	for (int i=0;i<NHIST;i++){
- 		 printf ("%i: %f, %f\n",i, rho_h[i] );
-	}
-
 
 	//	initialise cula
 
@@ -349,13 +359,42 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 	checkStatus(status);
 	printf ("DONE\n");
 
-	status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
-	printf ("cula solve status: %i\n", status);
-	checkStatus(status);
+	// execute kernels
 
-	//compute_eField<<<1,1>>>(rho_d,E_d,*dx);
+	printf ("Executing kernels ...\n");
+
+	for ( int t=0; t<1; t++ ) {
+
+		#ifdef GMEM_ATOMICS
+			cudaMemset ( hist_d, 0, sizeof(unsigned int)*NHIST ); // sets all bytes to 0
+			hist_kernel<<<NBLOCK,NTHREAD_PB>>>(x_d,nx,hist_d,*xMin,*xRng,rho_d,*weight,*dx);
+			remove_average<<<1,1>>>(rho_d,*dx);
+		#else
+			hist_kernel<<<NBLOCK,NTHREAD_PB>>>(x_d,nx,hist_d,*xMin,*xRng,rho_d,*weight,*dx);
+			mergePerBlockHistograms_kernel<<<NHIST,NBLOCK>>>(hist_d,*dx);
+			remove_average<<<1,1>>>(rho_d);
+		#endif
+
+		status	= culaDeviceSgesv ( NHIST, 1, a_d, NHIST, ipiv_d, rho_d, NHIST ); 
+		printf ("cula solve status: %i\n", status);
+		checkStatus(status);
+
+		compute_eField<<<1,1>>>(rho_d,E_d,*dx);
+
+		move_particles<<<NBLOCK,NTHREAD_PB>>>(x_d,vx_d,nx,E_d,*dt,*xMin,*xMax,*xRng);
+
+	}
+
+	printf ("DONE\n");
 
 	// copy result back to host
+
+	rho_h = (float *)malloc(sizeof(float)*NHIST);
+	cudaMemcpy ( rho_h, rho_d, sizeof(float)*NHIST, cudaMemcpyDeviceToHost);
+	CUERR
+	for (int i=0;i<NHIST;i++){
+ 		 printf ("%i: %f, %f\n",i, rho_h[i] );
+	}
 
 	cudaMemcpy ( hist_h, hist_d, sizeof(unsigned int)*NHIST, cudaMemcpyDeviceToHost);
 	CUERR
@@ -380,6 +419,7 @@ extern "C" void cudahist_ ( float *x_h, int *nP, float *hist, int *nhistIn, floa
 
 	cudaFree ( hist_d );
 	cudaFree ( x_d );
+	cudaFree ( vx_d );
 	cudaFree ( a_d );
 	cudaFree ( E_d );
 	CUERR
